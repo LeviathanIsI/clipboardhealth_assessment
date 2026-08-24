@@ -16,6 +16,17 @@ PAGE = """
 <!doctype html><html><head><meta charset="utf-8">
 <title>Bellhaven CRM Sync — Review</title>
 <style>
+ :root{
+   /* Badge palette — single edit point. Colors darkened from the spec values
+      only where 11px white/colored text failed 4.5:1 contrast on the card
+      background (green/amber fills; teal/orange outlines), same hue kept. */
+   --tier-high:#15803d; --tier-medium:#b45309; --tier-low:#dc2626;
+   --type-create:#2563eb; --type-rename:#0f766e; --type-reparent:#4f46e5;
+   --type-chow:#9333ea; --type-duplicate:#c2410c; --type-review:#475569;
+   --st-pending:#64748b; --st-approved:#2563eb; --st-applied:#15803d;
+   --st-rejected:#374151; --st-failed:#dc2626;
+   --st-stale-bg:#e2e8f0; --st-stale-fg:#334155;
+ }
  body{font-family:Segoe UI,system-ui,sans-serif;margin:0;background:#f5f4f0;color:#222}
  header{background:#2E5D50;color:#fff;padding:14px 24px;display:flex;gap:18px;align-items:center}
  header a{color:#fff;text-decoration:none;font-weight:600}
@@ -25,9 +36,25 @@ PAGE = """
  .tier-HIGH{border-left:5px solid #2E7D32}.tier-MEDIUM{border-left:5px solid #C9A227}
  .tier-LOW{border-left:5px solid #B45309}
  .card{background:#fff;border:1px solid #ddd;border-radius:6px;padding:14px 18px;margin:10px 0}
- .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:3px;background:#eee;margin-right:6px}
- .b-applied{background:#d7ecd9}.b-failed{background:#f6d3d3}.b-rejected{background:#e5e5e5}
- .b-pending{background:#fdf3d5}.b-stale{background:#eee;color:#888}
+ .badge{display:inline-block;text-transform:uppercase;font-size:11px;
+ font-weight:600;letter-spacing:0.05em;padding:2px 8px;border-radius:9999px;
+ background:#eceae3;color:#4a4a42;margin-right:6px}
+ /* confidence tier: traffic light, filled, white text */
+ .bt-HIGH{background:var(--tier-high);color:#fff}
+ .bt-MEDIUM{background:var(--tier-medium);color:#fff}
+ .bt-LOW{background:var(--tier-low);color:#fff}
+ /* proposal type: outlined label, transparent background */
+ .pt{background:transparent;border:1.5px solid currentColor}
+ .pt-create{color:var(--type-create)}.pt-rename{color:var(--type-rename)}
+ .pt-reparent{color:var(--type-reparent)}.pt-chow{color:var(--type-chow)}
+ .pt-duplicate{color:var(--type-duplicate)}.pt-review{color:var(--type-review)}
+ /* status: filled pill */
+ .b-pending{background:var(--st-pending);color:#fff}
+ .b-approved{background:var(--st-approved);color:#fff}
+ .b-applied{background:var(--st-applied);color:#fff}
+ .b-rejected{background:var(--st-rejected);color:#fff}
+ .b-failed{background:var(--st-failed);color:#fff}
+ .b-stale{background:var(--st-stale-bg);color:var(--st-stale-fg)}
  table{border-collapse:collapse;margin:8px 0;font-size:13px}
  td,th{border:1px solid #ddd;padding:4px 8px;text-align:left}
  .before{color:#a33;text-decoration:line-through}.after{color:#2E7D32;font-weight:600}
@@ -54,6 +81,24 @@ PAGE = """
 {{ body|safe }}
 </div></body></html>
 """
+
+
+# Proposal type -> outlined-badge class. UPDATE_ACCOUNT is split visually by
+# what its stored changes touch (name-only = rename, parent = re-parent);
+# anything unrecognized falls back to slate so nothing renders unstyled.
+def _type_badge_class(p):
+    t = p.get("ptype")
+    if t == "CREATE_ACCOUNT":
+        return "pt-create"
+    if t == "UPDATE_ACCOUNT":
+        fields = {c["field"] for c in (p.get("changes") or [])
+                  if c.get("entity") == "account"}
+        return "pt-rename" if fields == {"name"} else "pt-reparent"
+    if t in ("CHOW_REPARENT", "CHOW_DIVESTITURE"):
+        return "pt-chow"
+    if t == "MARK_DUPLICATE":
+        return "pt-duplicate"
+    return "pt-review"  # NEEDS_REVIEW and any future/orphan types
 
 
 def _money(v):
@@ -309,9 +354,9 @@ def _proposal_card(p):
     return f"""
     <div class="card tier-{p['tier']}">
       <div>{status_badge}{stale_badge}
-        <span class="badge">{p['tier']}</span>
+        <span class="badge bt-{p['tier']}">{p['tier']}</span>
         <span class="badge">{p['classification']}</span>
-        <span class="badge">{p['ptype']}</span>
+        <span class="badge pt {_type_badge_class(p)}">{p['ptype']}</span>
         <b>{p['target']}</b>
         <span style="float:right">{actions}</span></div>
       <table><tr><th>entity</th><th>id</th><th>field</th><th>before</th><th>after</th></tr>
