@@ -1,11 +1,26 @@
-# GitHub Actions equivalent of schedule/crontab.txt.
-# Place at .github/workflows/daily-sync.yml to activate. The pipeline only
-# scrapes, matches, and stores proposals — it never writes to the CRM.
-name: daily-crm-sync
+# Daily Bellhaven CRM sync — GitHub Actions workflow (ARTIFACT).
+#
+# This is the configuration we would use in production. It is not live in this
+# repo; to go live it would need:
+#   1. The CRM_API_TOKEN secret registered in the repository settings
+#      (Settings -> Secrets and variables -> Actions).
+#   2. data/sync.db persisted between runs — the runner filesystem is
+#      ephemeral and idempotency (skip decided proposals, stale marking)
+#      depends on the decision store surviving from one run to the next.
+#      Use actions/cache keyed on the db, or commit data/sync.db back to the
+#      repo at the end of the job.
+#   3. The file moved to .github/workflows/daily-sync.yml so Actions picks
+#      it up.
+#
+# The pipeline is read-only against the CRM: it scrapes, matches, and stores
+# proposals. Approvals only ever happen by hand in the review app.
+name: daily-sync
 
 on:
   schedule:
-    - cron: "0 6 * * *"
+    # GitHub cron runs in UTC. 13:00 UTC = 8:00am EST (UTC-5); during EDT
+    # (UTC-4) this drifts to 9:00am local. Accepted for an artifact config.
+    - cron: "0 13 * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -15,14 +30,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"  # matches the repo's development version
       - run: pip install -r requirements.txt
       - name: Run pipeline (read-only against CRM)
         env:
-          BELLHAVEN_API_TOKEN: ${{ secrets.BELLHAVEN_API_TOKEN }}
+          CRM_API_TOKEN: ${{ secrets.CRM_API_TOKEN }}
         run: python run_pipeline.py
-      - name: Keep proposal DB as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sync-db-${{ github.run_id }}
-          path: data/

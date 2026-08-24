@@ -15,7 +15,7 @@ explicit approval in the review app.
 | `store.py` | SQLite layer (`data/sync.db`): proposals, decisions, run history, idempotency. |
 | `run_pipeline.py` | Scheduler entry: scrape + match + store proposals. Never writes to the CRM. |
 | `app.py` | Flask review UI: approve/reject per proposal, bulk-approve HIGH, run summary. |
-| `schedule/` | `crontab.txt` (daily 06:00) and `daily-sync.yml` (GitHub Actions equivalent). |
+| `schedule/` | Daily-run artifacts: `crontab.txt` (local cron) and `daily-sync.yml` (GitHub Actions). See Scheduling below. |
 
 ## Running
 
@@ -26,7 +26,27 @@ python app.py            # review UI at http://127.0.0.1:5000
 ```
 
 Config is env-overridable: `BELLHAVEN_API_BASE`, `BELLHAVEN_SITE_BASE`,
-`BELLHAVEN_API_TOKEN`, `BELLHAVEN_DATA_DIR`.
+`CRM_API_TOKEN` (legacy alias `BELLHAVEN_API_TOKEN`; the sandbox token is the
+built-in fallback so local runs work unchanged), `BELLHAVEN_DATA_DIR`.
+
+## Scheduling
+
+Both schedule files are **artifacts** — checked in to show the production
+configuration, not live in this repo. The intent for both is a daily run at
+8:00am EST.
+
+- `schedule/daily-sync.yml` — GitHub Actions workflow. GitHub cron runs in
+  UTC, so it fires at `0 13 * * *` (13:00 UTC = 8am EST; during EDT this
+  drifts to 9am local). It passes the CRM token as `CRM_API_TOKEN` from
+  `secrets.CRM_API_TOKEN`. To go live it needs: the secret registered, the
+  file moved to `.github/workflows/`, and `data/sync.db` persisted between
+  runs (actions/cache or committing the db) — the runner filesystem is
+  ephemeral and idempotency depends on the decision store.
+- `schedule/crontab.txt` — the same intent for a local machine. Local cron
+  uses the system timezone, so it is simply `0 8 * * *` on an EST host.
+
+Either way the scheduled entry is `run_pipeline.py`, which is read-only
+against the CRM — approvals only ever happen by hand in the review app.
 
 ## Classification rules (all generic, computed at runtime)
 

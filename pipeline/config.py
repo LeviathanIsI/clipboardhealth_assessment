@@ -11,7 +11,14 @@ SITE_BASE = os.environ.get(
     "BELLHAVEN_SITE_BASE",
     "https://analyst-assessment-production.up.railway.app",
 )
-API_TOKEN = os.environ.get("BELLHAVEN_API_TOKEN", "bh_OcpnKK1KL6i2bcsahGQpJA")
+# CRM_API_TOKEN is what the scheduled workflow injects from secrets;
+# BELLHAVEN_API_TOKEN is kept as a legacy override, and the sandbox token
+# remains the fallback so local runs work unchanged.
+API_TOKEN = (
+    os.environ.get("CRM_API_TOKEN")
+    or os.environ.get("BELLHAVEN_API_TOKEN")
+    or "bh_OcpnKK1KL6i2bcsahGQpJA"
+)
 
 DATA_DIR = os.environ.get("BELLHAVEN_DATA_DIR", os.path.join(REPO_ROOT, "data"))
 DB_PATH = os.path.join(DATA_DIR, "sync.db")

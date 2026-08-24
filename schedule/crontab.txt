@@ -1,3 +1,5 @@
 # Daily Bellhaven CRM sync — scrape + match + store proposals (never writes to CRM).
+# Local cron uses the system timezone, so on an EST machine this fires at
+# 8:00am local (the same intent as the 13:00 UTC GitHub Actions schedule).
 # Adjust the repo path and python for the host. Install with: crontab crontab.txt
-0 6 * * * cd /opt/bellhaven-sync && /usr/bin/env python3 run_pipeline.py >> data/cron.log 2>&1
+0 8 * * * cd /opt/bellhaven-sync && /usr/bin/env python3 run_pipeline.py >> data/cron.log 2>&1
