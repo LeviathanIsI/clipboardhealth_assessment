@@ -17,17 +17,28 @@ explicit approval in the review app.
 | `app.py` | Flask review UI: approve/reject per proposal, bulk-approve HIGH, run summary. |
 | `schedule/` | Daily-run artifacts: `crontab.txt` (local cron) and `daily-sync.yml` (GitHub Actions). See Scheduling below. |
 
-## Running
+## Setup & running
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env     # then paste your CRM token into .env — that's it
 python run_pipeline.py   # generate/refresh proposals (read-only vs CRM)
 python app.py            # review UI at http://127.0.0.1:5000
 ```
 
-Config is env-overridable: `BELLHAVEN_API_BASE`, `BELLHAVEN_SITE_BASE`,
-`CRM_API_TOKEN` (legacy alias `BELLHAVEN_API_TOKEN`; the sandbox token is the
-built-in fallback so local runs work unchanged), `BELLHAVEN_DATA_DIR`.
+The CRM token is **not** stored in code. Resolution order: a real
+`CRM_API_TOKEN` environment variable (shell export or the Actions secret)
+wins first, then the git-ignored `.env` at the repo root; if neither is set,
+startup fails with instructions. `.env.example` is the committed template.
+
+> **Note for reviewers:** the sandbox token appeared in tracked files in
+> earlier commits, so it exists in this repo's git history. It was removed
+> from the working tree in the secrets-cleanup commit; history was
+> deliberately left unrewritten. In a real project the exposed token would
+> be rotated and history scrubbed (e.g. `git filter-repo`).
+
+Other env-overridable config: `BELLHAVEN_API_BASE`, `BELLHAVEN_SITE_BASE`,
+`BELLHAVEN_DATA_DIR`.
 
 ## Scheduling
 
