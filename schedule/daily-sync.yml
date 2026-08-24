@@ -1,0 +1,28 @@
+# GitHub Actions equivalent of schedule/crontab.txt.
+# Place at .github/workflows/daily-sync.yml to activate. The pipeline only
+# scrapes, matches, and stores proposals — it never writes to the CRM.
+name: daily-crm-sync
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run pipeline (read-only against CRM)
+        env:
+          BELLHAVEN_API_TOKEN: ${{ secrets.BELLHAVEN_API_TOKEN }}
+        run: python run_pipeline.py
+      - name: Keep proposal DB as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-db-${{ github.run_id }}
+          path: data/
