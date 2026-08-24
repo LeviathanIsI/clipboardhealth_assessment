@@ -113,6 +113,7 @@ TIER_BADGES = {  # tier -> legend description (class = f"bt-{tier}")
 
 TYPE_CLASS = {  # ptype -> outlined-badge class (UPDATE_ACCOUNT split below)
     "CREATE_ACCOUNT": "pt-create",
+    "RENAME": "pt-rename",
     "CHOW_REPARENT": "pt-chow",
     "CHOW_DIVESTITURE": "pt-chow",
     "MARK_DUPLICATE": "pt-duplicate",
@@ -124,6 +125,8 @@ _TYPE_FALLBACK_CLASS = "pt-review"  # unknown types render slate, never bare
 TYPE_BADGES = [  # (label, class, what the executor actually does)
     ("CREATE_ACCOUNT", TYPE_CLASS["CREATE_ACCOUNT"],
      "creates a new account under the Bellhaven parent from the website's details"),
+    ("RENAME", TYPE_CLASS["RENAME"],
+     "cosmetic: fixes the spelling of a confirmed match to the website name"),
     ("UPDATE_ACCOUNT (rename)", _UPDATE_RENAME_CLASS,
      "updates the account's name to the website spelling"),
     ("UPDATE_ACCOUNT (re-parent)", _UPDATE_REPARENT_CLASS,
@@ -260,6 +263,18 @@ def evidence_facts(p):
                 "Single-field update: the CRM name is set to the website "
                 "spelling; nothing else changes."
             )
+
+    elif ptype == "RENAME":
+        for c in p.get("changes") or []:
+            if c.get("entity") == "account" and c.get("field") == "name":
+                wrong.append(
+                    f"Name differs in spelling only: CRM says '{c['before']}', "
+                    f"website says '{c['after']}'."
+                )
+        action.append(
+            "Cosmetic single-field rename to the website spelling; the match "
+            "itself is already confirmed."
+        )
 
     elif ptype == "CHOW_REPARENT":
         if acct.get("name") and loc.get("name") and acct["name"] != loc["name"]:

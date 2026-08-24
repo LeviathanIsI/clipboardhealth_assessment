@@ -18,6 +18,7 @@ Matching signals
                 phone digits equal
 """
 import hashlib
+import html
 import json
 
 from .normalize import (
@@ -212,6 +213,7 @@ def run_match(locations, accounts, contacts):
     proposals, confirmed, classifications = [], [], {}
     matched_account_ids = set()  # any account that matched any location
     duplicate_loser_ids = set()
+    rename_target_ids = set()  # accounts already given a cosmetic rename
 
     for loc in locations:
         if not loc.get("city") or not loc.get("state"):
@@ -378,6 +380,49 @@ def run_match(locations, accounts, contacts):
             classifications[loc["slug"]] = {
                 "classification": "CONFIRMED", "account_id": acct["account_id"]
             }
+            # Cosmetic rename: normalized names match (hence CONFIRMED) but
+            # the raw spellings differ -> propose the website spelling.
+            # Only CONFIRMED winners reach this point, so accounts handled by
+            # re-parent/CHOW/duplicate proposals (which already apply the
+            # website spelling) can never receive a second rename; the seen
+            # set also guards against two locations hitting one account.
+            acct_raw = html.unescape(acct.get("name") or "").strip()
+            loc_raw = (loc.get("name") or "").strip()
+            if acct_raw != loc_raw and acct["account_id"] not in rename_target_ids:
+                rename_target_ids.add(acct["account_id"])
+                reason = (
+                    f"Cosmetic rename to the website spelling: CRM says "
+                    f"'{acct_raw}', website says '{loc_raw}'. Match already "
+                    f"confirmed by {_signals_text(winner)}."
+                )
+                ops = [
+                    {"op": "patch_account", "account_id": acct["account_id"],
+                     "body": {"name": loc_raw}, "append_note": reason}
+                ]
+                changes = [
+                    {"entity": "account", "id": acct["account_id"],
+                     "field": "name", "before": acct.get("name"),
+                     "after": loc_raw}
+                ]
+                evidence = {
+                    "location": _loc_summary(loc),
+                    "account": _acct_summary(acct),
+                    "signals": _signals_text(winner),
+                    "human": [
+                        f"Confirmed match via {_signals_text(winner)} — the "
+                        "difference is spelling only.",
+                        f"Name spelling differs: CRM says '{acct_raw}', "
+                        f"website says '{loc_raw}'.",
+                        ("Address and administrator contact already confirm "
+                         "this is the same facility."
+                         if winner["contact_match"] else
+                         "Address already confirms this is the same facility."),
+                    ],
+                }
+                proposals.append(
+                    _mk_proposal("RENAME", acct["account_id"], "CONFIRMED",
+                                 "HIGH", ops, changes, evidence)
+                )
             continue
 
         classifications[loc["slug"]] = {
