@@ -8,14 +8,17 @@ explicit approval in the review app.
 
 | Path | Role |
 |---|---|
-| `pipeline/scrape.py` | Crawls the paginated `/communities` directory **and** scans the homepage for directory-absent links; parses every detail page. |
+| `pipeline/scrape.py` | Crawls the paginated `/communities` directory **and** scans the homepage for directory-absent links; parses every detail page. Fails loudly on zero parses; warns when the location count moves >20% vs the previous snapshot. |
 | `pipeline/normalize.py` | Shared address/name/person/phone normalization keys used by both sides of the comparison. |
 | `pipeline/match.py` | Matching + classification; emits proposals. Pure — no network, no hardcoded records. |
 | `pipeline/executor.py` | The **only** module that writes to the CRM. Runs a proposal's ops in order, resolves `{new_id}` captures, appends `[sync-bot YYYY-MM-DD]` notes. |
-| `store.py` | SQLite layer (`data/sync.db`): proposals, decisions, run history, idempotency. |
+| `pipeline/api_client.py` | Thin CRM client: exhaustive pagination for reads; write helpers used only by the executor. |
+| `pipeline/config.py` | Env/.env-driven configuration (API base, site base, token, data dir). |
+| `store.py` | SQLite layer (`data/sync.db`, git-ignored): proposals, decisions, run history, idempotency. |
 | `run_pipeline.py` | Scheduler entry: scrape + match + store proposals. Never writes to the CRM. |
-| `app.py` | Flask review UI: approve/reject per proposal, bulk-approve HIGH, run summary. |
+| `app.py` | Flask review UI: tier-grouped proposal cards with before→after diffs, human-readable evidence facts (raw JSON behind a toggle), color-coded badges with a collapsible legend, approve/reject per proposal, bulk-approve HIGH, run summary. |
 | `schedule/` | Daily-run artifacts: `crontab.txt` (local cron) and `daily-sync.yml` (GitHub Actions). See Scheduling below. |
+| `recon/` | Phase-1 reconnaissance: raw API pulls, scraped-site snapshots (`html/`), parsed locations, and `findings.md` — the data-quality analysis the pipeline's generic rules were sanity-checked against. |
 
 ## Setup & running
 
@@ -72,6 +75,11 @@ against the CRM — approvals only ever happen by hand in the review app.
   **MISSING** (create under the Bellhaven parent; same-city name-only overlaps
   are recorded as near-misses, not matches) / **ORPHANED** (Active Bellhaven
   child with no website presence → `Needs Review`, never auto-Inactive).
+- **Cosmetic renames**: a CONFIRMED match whose *raw* name (entity-decoded,
+  trimmed) still differs from the website spelling gets a HIGH-tier `RENAME`
+  proposal. Only CONFIRMED winners emit these, so accounts handled by
+  re-parent/CHOW/duplicate proposals (which already apply the website
+  spelling) never receive a second rename.
 - **Duplicates**: ≥2 accounts sharing a website location's address key. The
   survivor is the website-corroborated account (name/contact), then
   Bellhaven-parent, then revenue history. Losers get `duplicate_of_account` +
@@ -98,10 +106,22 @@ whose condition disappeared are marked stale and hidden. Note text never embeds
 dates at proposal time (the executor stamps the date at apply time), so hashes
 are stable across days.
 
+## Proposal types
+
+`RENAME` (cosmetic spelling fix on a confirmed match) · `UPDATE_ACCOUNT`
+(name and/or parent fix, single PATCH) · `CREATE_ACCOUNT` (new account under
+the Bellhaven parent from website details) · `CHOW_REPARENT` (create
+successor, then link `chow_current_account`) · `CHOW_DIVESTITURE`
+(`chow_current_account` link only, everything else untouched) ·
+`MARK_DUPLICATE` (deactivate + `duplicate_of_account` + re-point contacts) ·
+`NEEDS_REVIEW` (status flag for a human decision). The review UI's badge
+legend describes each in place.
+
 ## Confidence tiers
 
-HIGH (single-field fix with address + name/contact corroboration, or a
-website-corroborated duplicate), MEDIUM (creates, CHOW sequences, multi-field
-fixes, uncorroborated duplicates), LOW (orphans, divestitures, near-miss
-creates). Tiers only affect grouping and the bulk button — **every** write
-requires an explicit human approval.
+HIGH (cosmetic renames of confirmed matches; single-field fixes with
+address + name/contact corroboration; website-corroborated duplicates),
+MEDIUM (creates, CHOW sequences, multi-field fixes, uncorroborated
+duplicates), LOW (orphans, divestitures, near-miss creates). Tiers only
+affect grouping and the bulk button — **every** write requires an explicit
+human approval.
