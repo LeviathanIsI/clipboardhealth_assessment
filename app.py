@@ -1,6 +1,7 @@
 """Review UI (Flask). Lists proposals grouped by confidence tier, shows exact
 field changes, evidence, and raw API operations. Every CRM write requires an
 explicit human approval here — nothing auto-applies, ever."""
+import html as html_mod
 import json
 
 from flask import Flask, redirect, render_template_string, request, url_for
@@ -36,6 +37,8 @@ PAGE = """
  .approve{background:#2E7D32;color:#fff}.reject{background:#b3b3b3}
  .bulk{background:#2E5D50;color:#fff;padding:8px 16px}
  ul{margin:4px 0}
+ .facts{background:#fbfaf7;border:1px solid #eee9dc;border-radius:4px;
+ padding:10px 10px 10px 28px}.facts li{margin:3px 0;font-size:13.5px}
  .muted{color:#777;font-size:13px}
 </style></head><body>
 <header>
@@ -53,6 +56,223 @@ PAGE = """
 """
 
 
+def _money(v):
+    try:
+        return "${:,.0f}".format(float(v))
+    except (TypeError, ValueError):
+        return str(v)
+
+
+# Evidence keys the fact renderer consumes; anything else falls through to a
+# plain "key: value" line so new matcher fields are never silently hidden.
+_HANDLED_EVIDENCE_KEYS = {
+    "location", "account", "survivor", "loser", "signals", "survivor_signals",
+    "contacts_moved", "near_misses", "name_collisions_in_other_cities",
+    "same_address_operator_accounts", "human",
+}
+
+
+def evidence_facts(p):
+    """Render a proposal's stored evidence as ordered declarative facts:
+    what matched, then what's wrong, then why this action, then cautions."""
+    ev = p.get("evidence") or {}
+    ptype = p.get("ptype")
+    loc = ev.get("location") or {}
+    acct = ev.get("account") or {}
+    signals = ev.get("signals") or ""
+    matched, wrong, action, caution = [], [], [], []
+
+    rev = acct.get("lifetime_revenue") or 0
+    ar = acct.get("outstanding_ar") or 0
+
+    # ---- what matched ------------------------------------------------------
+    if "address match" in signals and loc and acct:
+        matched.append(
+            f"Address matches: {loc.get('address')} (website) = "
+            f"{acct.get('address')} (CRM, normalized)."
+        )
+    if "PO-Box" in signals:
+        matched.append(
+            "CRM street is a PO Box or blank, so address matching is "
+            "impossible; matched by name + city/state instead."
+        )
+    elif "name match" in signals:
+        matched.append(
+            f"Name matches after normalization: '{acct.get('name')}' (CRM) = "
+            f"'{loc.get('name')}' (website)."
+        )
+    if "administrator matches" in signals and loc.get("administrator"):
+        matched.append(
+            f"Website administrator {loc['administrator']} matches a contact "
+            "on this account."
+        )
+    if "phone match" in signals:
+        matched.append("Phone numbers match between the website and the CRM.")
+
+    # ---- what's wrong + why this action ------------------------------------
+    if ptype == "UPDATE_ACCOUNT":
+        changed_fields = set()
+        for c in p.get("changes") or []:
+            if c.get("entity") != "account":
+                continue
+            changed_fields.add(c["field"])
+            if c["field"] == "name":
+                wrong.append(
+                    f"Name differs: CRM says '{c['before']}', website says "
+                    f"'{c['after']}'."
+                )
+            elif c["field"] == "parent_id":
+                wrong.append(
+                    f"Parent differs: CRM has {c['before'] or 'no parent'}; "
+                    f"should be {c['after']}."
+                )
+        if "parent_id" in changed_fields:
+            action.append(
+                f"This account has lifetime revenue {_money(rev)} and "
+                f"outstanding AR {_money(ar)} — the CHOW rule is not "
+                "triggered, so a direct re-parent is allowed."
+            )
+        if changed_fields == {"name"}:
+            action.append(
+                "Single-field update: the CRM name is set to the website "
+                "spelling; nothing else changes."
+            )
+
+    elif ptype == "CHOW_REPARENT":
+        if acct.get("name") and loc.get("name") and acct["name"] != loc["name"]:
+            wrong.append(
+                f"Name differs: CRM says '{acct['name']}', website says "
+                f"'{loc['name']}'."
+            )
+        wrong.append(
+            f"Parent differs: CRM has {acct.get('parent_name') or 'no parent'}; "
+            "the facility belongs under the Bellhaven parent."
+        )
+        action.append(
+            f"This account has lifetime revenue {_money(rev)} and outstanding "
+            f"AR {_money(ar)}, so the CHOW rule applies: a successor account "
+            "is created under the Bellhaven parent first, then this account "
+            "is linked via chow_current_account. Nothing else on it changes."
+        )
+
+    elif ptype == "MARK_DUPLICATE":
+        survivor = ev.get("survivor") or {}
+        loser = ev.get("loser") or {}
+        ss = ev.get("survivor_signals") or ""
+        matched.append(
+            f"Both accounts sit at the same address: {loser.get('address')} "
+            "(normalized match)."
+        )
+        wrong.append(
+            f"{loser.get('name')} [{loser.get('account_id')}] duplicates "
+            f"{survivor.get('name')} [{survivor.get('account_id')}]."
+        )
+        if "name match" in ss:
+            action.append("The survivor's name matches the website listing.")
+        if "administrator matches" in ss and loc.get("administrator"):
+            action.append(
+                f"Website administrator {loc['administrator']} matches a "
+                "contact on the surviving account."
+            )
+        if "phone match" in ss:
+            action.append("The survivor's phone matches the website.")
+        if survivor.get("parent_name"):
+            action.append(f"The survivor sits under {survivor['parent_name']}.")
+        action.append(
+            "The losing record is marked Inactive and linked to the survivor "
+            "via duplicate_of_account."
+        )
+        moved = ev.get("contacts_moved") or []
+        if moved:
+            action.append(
+                f"Contacts re-pointed to the survivor so none are stranded: "
+                f"{', '.join(moved)}."
+            )
+        else:
+            action.append("No contacts exist on the losing record.")
+        l_rev = loser.get("lifetime_revenue") or 0
+        l_ar = loser.get("outstanding_ar") or 0
+        if l_rev or l_ar:
+            caution.append(
+                f"Caution: the losing record carries lifetime revenue "
+                f"{_money(l_rev)} and outstanding AR {_money(l_ar)}."
+            )
+
+    elif ptype == "CREATE_ACCOUNT":
+        wrong.append(
+            f"No CRM account matches {loc.get('name')} at {loc.get('address')} "
+            "by address or name."
+        )
+        action.append(
+            "A new account is created under the Bellhaven parent, copying the "
+            "website's facility details."
+        )
+
+    elif ptype == "CHOW_DIVESTITURE":
+        wrong.append(
+            f"{acct.get('name')} [{acct.get('account_id')}] is Active under "
+            "the Bellhaven parent but matches no website location."
+        )
+        for o in ev.get("same_address_operator_accounts") or []:
+            matched.append(
+                f"{o.get('name')} [{o.get('account_id')}] "
+                f"({o.get('parent_name')}) exists at the same address — this "
+                "looks like a divestiture."
+            )
+        action.append(
+            f"This account has lifetime revenue {_money(rev)} and outstanding "
+            f"AR {_money(ar)}, so the CHOW rule applies: only "
+            "chow_current_account is set; status stays Active and every other "
+            "field is untouched."
+        )
+
+    elif ptype == "NEEDS_REVIEW":
+        wrong.append(
+            f"{acct.get('name')} [{acct.get('account_id')}] is Active under "
+            "the Bellhaven parent but no website location matches it by "
+            "address or name."
+        )
+        for o in ev.get("same_address_operator_accounts") or []:
+            caution.append(
+                f"Another operator's account exists at the same address: "
+                f"{o.get('name')} [{o.get('account_id')}] "
+                f"({o.get('parent_name')}) — possible divestiture, but no "
+                "billing constraint forces the CHOW form."
+            )
+        action.append(
+            "Status is set to Needs Review — there is no proof the facility "
+            "closed or was sold, so it is not deactivated."
+        )
+
+    # ---- cautions ----------------------------------------------------------
+    for nm in ev.get("near_misses") or []:
+        a = nm.get("account") or {}
+        tokens = ", ".join(nm.get("shared_name_tokens") or [])
+        caution.append(
+            f"Near miss: {a.get('name')} at {a.get('address')} shares the "
+            f"city and name tokens ({tokens}) but not the street — not "
+            "treated as a match."
+        )
+    for a in ev.get("name_collisions_in_other_cities") or []:
+        caution.append(
+            f"Caution: an unrelated '{a.get('name')}' exists at "
+            f"{a.get('address')} — same name, different city, different "
+            "facility."
+        )
+    if loc.get("homepage_only"):
+        caution.append(
+            "This community was found only via a homepage link; it does not "
+            "appear in the /communities directory."
+        )
+
+    # Unrecognized evidence fields are shown, never hidden.
+    extra = [
+        f"{k}: {v if isinstance(v, str) else json.dumps(v)}"
+        for k, v in ev.items() if k not in _HANDLED_EVIDENCE_KEYS
+    ]
+    return matched + wrong + action + caution + extra
+
+
 def _proposal_card(p):
     status_badge = f'<span class="badge b-{p["status"]}">{p["status"]}</span>'
     stale_badge = '<span class="badge b-stale">stale</span>' if p["stale"] else ""
@@ -62,7 +282,14 @@ def _proposal_card(p):
         f"<td class='after'>{c['after']}</td></tr>"
         for c in p["changes"]
     )
-    human = "".join(f"<li>{h}</li>" for h in p["evidence"].get("human", []))
+    fact_list = evidence_facts(p)
+    human = "".join(
+        f"<li>{html_mod.escape(f)}</li>" for f in fact_list[:4])
+    if len(fact_list) > 4:
+        human += (f"<li class='muted'>+{len(fact_list) - 4} more under "
+                  "Full evidence.</li>")
+    facts = "".join(
+        f"<li>{html_mod.escape(f)}</li>" for f in fact_list)
     actions = ""
     if p["status"] == "pending" and not p["stale"]:
         actions = (
@@ -91,7 +318,11 @@ def _proposal_card(p):
       {rows}</table>
       <b>Evidence</b><ul>{human}</ul>
       <details><summary>Full evidence</summary>
-        <pre>{json.dumps(p['evidence'], indent=2)}</pre></details>
+        <ul class="facts">{facts}</ul>
+        <details><summary>Raw</summary>
+          <pre>{html_mod.escape(json.dumps(p['evidence'], indent=2))}</pre>
+        </details>
+      </details>
       <details><summary>Raw API operations (run in order on approval)</summary>
         <pre>{json.dumps(p['payload'], indent=2)}</pre></details>
       {api_resp}
