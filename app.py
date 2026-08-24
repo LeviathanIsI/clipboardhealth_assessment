@@ -66,6 +66,14 @@ PAGE = """
  ul{margin:4px 0}
  .facts{background:#fbfaf7;border:1px solid #eee9dc;border-radius:4px;
  padding:10px 10px 10px 28px}.facts li{margin:3px 0;font-size:13.5px}
+ #legend summary{cursor:pointer;font-weight:600}
+ .lg-group{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;
+ margin:8px 0;padding-top:6px;border-top:1px dashed #e5e2d8}
+ .lg-title{font-size:11px;text-transform:uppercase;letter-spacing:0.05em;
+ color:#8a8574;min-width:96px}
+ .lg-item{display:inline-flex;align-items:center;white-space:nowrap}
+ .lg-item .badge{margin-right:5px}
+ .lg-desc{font-size:12.5px;color:#555;white-space:normal;margin-right:4px}
  .muted{color:#777;font-size:13px}
 </style></head><body>
 <header>
@@ -79,26 +87,96 @@ PAGE = """
 <div class="wrap">
 {% if message %}<div class="card">{{ message }}</div>{% endif %}
 {{ body|safe }}
-</div></body></html>
+</div>
+<script>
+(function(){
+  var lg=document.getElementById('legend');
+  if(!lg)return;
+  if(localStorage.getItem('legendOpen')==='1')lg.open=true;
+  lg.addEventListener('toggle',function(){
+    localStorage.setItem('legendOpen',lg.open?'1':'0');});
+})();
+</script>
+</body></html>
 """
 
 
-# Proposal type -> outlined-badge class. UPDATE_ACCOUNT is split visually by
-# what its stored changes touch (name-only = rename, parent = re-parent);
-# anything unrecognized falls back to slate so nothing renders unstyled.
+# ---- badge definitions: single source of truth for cards AND the legend ----
+# Colors live only in the CSS variables; these structures carry the class
+# names and legend descriptions. Tier/status classes follow the same
+# f"bt-{tier}" / f"b-{status}" convention the cards render with.
+TIER_BADGES = {  # tier -> legend description (class = f"bt-{tier}")
+    "HIGH": "strong evidence, safe to bulk approve",
+    "MEDIUM": "multi-step or partially corroborated",
+    "LOW": "judgment call, read the evidence",
+}
+
+TYPE_CLASS = {  # ptype -> outlined-badge class (UPDATE_ACCOUNT split below)
+    "CREATE_ACCOUNT": "pt-create",
+    "CHOW_REPARENT": "pt-chow",
+    "CHOW_DIVESTITURE": "pt-chow",
+    "MARK_DUPLICATE": "pt-duplicate",
+    "NEEDS_REVIEW": "pt-review",
+}
+_UPDATE_RENAME_CLASS, _UPDATE_REPARENT_CLASS = "pt-rename", "pt-reparent"
+_TYPE_FALLBACK_CLASS = "pt-review"  # unknown types render slate, never bare
+
+TYPE_BADGES = [  # (label, class, what the executor actually does)
+    ("CREATE_ACCOUNT", TYPE_CLASS["CREATE_ACCOUNT"],
+     "creates a new account under the Bellhaven parent from the website's details"),
+    ("UPDATE_ACCOUNT (rename)", _UPDATE_RENAME_CLASS,
+     "updates the account's name to the website spelling"),
+    ("UPDATE_ACCOUNT (re-parent)", _UPDATE_REPARENT_CLASS,
+     "moves the account under the Bellhaven parent in a single update (no CHOW trigger)"),
+    ("CHOW_REPARENT", TYPE_CLASS["CHOW_REPARENT"],
+     "preserves the old account for billing: creates a successor under the "
+     "correct parent, then links it via chow_current_account"),
+    ("CHOW_DIVESTITURE", TYPE_CLASS["CHOW_DIVESTITURE"],
+     "sets chow_current_account to the acquiring operator's account; every "
+     "other field stays untouched"),
+    ("MARK_DUPLICATE", TYPE_CLASS["MARK_DUPLICATE"],
+     "marks this account a duplicate of a surviving record, deactivates it, "
+     "and re-points its contacts to the survivor"),
+    ("NEEDS_REVIEW", TYPE_CLASS["NEEDS_REVIEW"],
+     "sets status to Needs Review so a human decides; nothing is deactivated"),
+]
+
+STATUS_BADGES = {  # status -> legend description (class = f"b-{status}")
+    "pending": "awaiting a decision",
+    "approved": "approved — write in progress",
+    "applied": "written to the CRM",
+    "rejected": "declined by a reviewer; no CRM change",
+    "failed": "the CRM write failed — see the API response on the card",
+    "stale": "underlying condition no longer present on the latest run",
+}
+
+
 def _type_badge_class(p):
     t = p.get("ptype")
-    if t == "CREATE_ACCOUNT":
-        return "pt-create"
     if t == "UPDATE_ACCOUNT":
         fields = {c["field"] for c in (p.get("changes") or [])
                   if c.get("entity") == "account"}
-        return "pt-rename" if fields == {"name"} else "pt-reparent"
-    if t in ("CHOW_REPARENT", "CHOW_DIVESTITURE"):
-        return "pt-chow"
-    if t == "MARK_DUPLICATE":
-        return "pt-duplicate"
-    return "pt-review"  # NEEDS_REVIEW and any future/orphan types
+        return _UPDATE_RENAME_CLASS if fields == {"name"} else _UPDATE_REPARENT_CLASS
+    return TYPE_CLASS.get(t, _TYPE_FALLBACK_CLASS)
+
+
+def _legend_html():
+    def group(title, entries, base=""):
+        items = "".join(
+            f'<span class="lg-item"><span class="badge {base}{cls}">{label}</span>'
+            f'<span class="lg-desc">{desc}</span></span>'
+            for label, cls, desc in entries)
+        return f'<div class="lg-group"><span class="lg-title">{title}</span>{items}</div>'
+
+    return (
+        '<details class="card" id="legend"><summary>Badge legend</summary>'
+        + group("Confidence",
+                [(t, f"bt-{t}", d) for t, d in TIER_BADGES.items()])
+        + group("Proposal Type", TYPE_BADGES, base="pt ")
+        + group("Status",
+                [(s, f"b-{s}", d) for s, d in STATUS_BADGES.items()])
+        + "</details>"
+    )
 
 
 def _money(v):
@@ -387,7 +465,7 @@ def index():
     stale = store.list_stale_pending(conn)
     conn.close()
 
-    parts = []
+    parts = [_legend_html()]
     high_count = sum(1 for p in pending if p["tier"] == "HIGH")
     if high_count:
         parts.append(
